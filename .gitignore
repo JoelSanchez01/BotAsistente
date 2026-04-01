@@ -1,0 +1,6 @@
+.env
+__pycache__/
+*.pyc
+tareas.db
+tareas.db.old
+.vscode/

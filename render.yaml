@@ -1,0 +1,19 @@
+# Blueprint de despliegue para Render.com
+# Documentación: https://render.com/docs/blueprint-spec
+
+services:
+  - type: web
+    name: mi-bot-telegram
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    healthCheckPath: /health   # Render usa esto para saber si el servicio está vivo
+    envVars:
+      - key: MODO
+        value: prod
+      - key: TELEGRAM_TOKEN
+        sync: false            # Se rellena manualmente en el dashboard de Render
+      - key: ALLOWED_USER_ID
+        sync: false
+      - key: DATABASE_URL
+        sync: false            # Pega aquí el connection string de Supabase

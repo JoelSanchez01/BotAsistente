@@ -1,0 +1,6 @@
+python-telegram-bot>=20.0
+python-dotenv
+dateparser
+pytz
+psycopg2-binary
+aiohttp>=3.8.4
