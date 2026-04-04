@@ -604,10 +604,14 @@ async def _run_prod(port: int, webhook_url: str) -> None:
     async def health_check(request: web.Request) -> web.Response:
         return web.Response(text="OK")
 
+    # Usar /webhook como path — evita el problema del proxy de Render con
+    # rutas que contienen ":" (el token tiene formato "id:hash")
+    WEBHOOK_PATH = "/webhook"
+
     aio_app = web.Application()
-    aio_app.router.add_post(f"/{TOKEN}", telegram_webhook)
-    aio_app.router.add_get("/health",    health_check)
-    aio_app.router.add_get("/",          health_check)
+    aio_app.router.add_post(WEBHOOK_PATH, telegram_webhook)
+    aio_app.router.add_get("/health",     health_check)
+    aio_app.router.add_get("/",           health_check)
 
     runner = web.AppRunner(aio_app)
 
@@ -621,7 +625,7 @@ async def _run_prod(port: int, webhook_url: str) -> None:
         await runner.setup()
         await web.TCPSite(runner, "0.0.0.0", port).start()
 
-        full_webhook = f"{webhook_url}/{TOKEN}"
+        full_webhook = f"{webhook_url}{WEBHOOK_PATH}"
         await application.bot.set_webhook(url=full_webhook, drop_pending_updates=True)
         logging.info(f"Webhook configurado: {full_webhook}")
         print(f"🚀 Bot activo — puerto {port} — health: {webhook_url}/health")
