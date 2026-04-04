@@ -60,10 +60,8 @@ def get_db():
     """
     Context manager para obtener y liberar conexiones del pool de forma segura.
 
-    Uso:
-        with get_db() as conn:
-            cursor = conn.cursor()
-            cursor.execute(...)
+    Valida que la conexión esté viva antes de usarla — Neon.tech cierra
+    conexiones inactivas y el pool las retiene sin saberlo.
 
     Garantías:
       - commit() automático si el bloque termina sin excepción.
@@ -72,14 +70,36 @@ def get_db():
     """
     pool = _get_pool()
     conn = pool.getconn()
+
+    # Validar que la conexión sigue viva (Neon cierra idle connections)
+    if conn.closed:
+        pool.putconn(conn, close=True)
+        conn = pool.getconn()
+    else:
+        try:
+            conn.cursor().execute("SELECT 1")
+        except psycopg2.Error:
+            # Conexión muerta — descartarla y pedir una fresca
+            try:
+                pool.putconn(conn, close=True)
+            except Exception:
+                pass
+            conn = pool.getconn()
+
     try:
         yield conn
         conn.commit()
     except Exception:
-        conn.rollback()
+        try:
+            conn.rollback()
+        except Exception:
+            pass  # La conexión puede estar cerrada, no bloquear por eso
         raise
     finally:
-        pool.putconn(conn)
+        try:
+            pool.putconn(conn)
+        except Exception:
+            pass
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
