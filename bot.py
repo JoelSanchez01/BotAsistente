@@ -591,12 +591,14 @@ async def _run_prod(port: int, webhook_url: str) -> None:
     application = _build_app()
 
     async def telegram_webhook(request: web.Request) -> web.Response:
+        logging.info("Webhook POST recibido de Telegram")
         try:
             data   = await request.json()
             update = Update.de_json(data, application.bot)
             await application.update_queue.put(update)
+            logging.info(f"Update encolado: update_id={data.get('update_id')}")
         except Exception as e:
-            logging.error(f"Error procesando update: {e}")
+            logging.error(f"Error procesando update: {e}", exc_info=True)
         return web.Response(text="OK")
 
     async def health_check(request: web.Request) -> web.Response:
