@@ -157,10 +157,18 @@ async def nueva_tarea(update: Update, context: ContextTypes.DEFAULT_TYPE):
     texto_final = texto_sin_categoria
 
     if fechas_detectadas:
-        # Tomamos la última coincidencia (suele ser la fecha más relevante al final del mensaje)
-        fecha_texto, fecha_limite_obj = fechas_detectadas[-1]
+        # Tomamos la coincidencia más larga: más caracteres = más específica y menos falsos positivos.
+        # Ej: "lunes a las 11am" (17 chars) gana sobre "11am" (4 chars) que dateparser
+        # malinterpreta como el día 11 del mes en lugar de las 11 AM del lunes.
+        fecha_texto, fecha_limite_obj = max(fechas_detectadas, key=lambda x: len(x[0]))
         # ── Paso 3: limpiar el fragmento de fecha del título ─────────────────
         texto_final = ' '.join(texto_sin_categoria.replace(fecha_texto, '').split())
+        # Eliminar artículos/preposiciones sueltas que quedan al final tras quitar la fecha.
+        # Ej: "Terminar Change el" → "Terminar Change"
+        texto_final = re.sub(
+            r'\s+\b(para el|hasta el|para la|para|hasta|a las|a la|a|el|la|en|de)\s*$',
+            '', texto_final, flags=re.IGNORECASE
+        ).strip()
         logging.info(f"Fecha detectada '{fecha_texto}': {fecha_limite_obj}")
 
     # ── Paso 4: guardar en BD y programar recordatorio ────────────────────────
