@@ -570,49 +570,65 @@ def _build_app() -> Application:
 # ═══════════════════════════════════════════════════════════════════════════════
 # MODO PRODUCCIÓN — webhook nativo de PTB + aiohttp solo para /health
 # ═══════════════════════════════════════════════════════════════════════════════
+# MODO PRODUCCIÓN — servidor aiohttp con /health + webhook de Telegram
+# ═══════════════════════════════════════════════════════════════════════════════
 
-async def _health_server(port_health: int) -> web.AppRunner:
+async def _run_prod(port: int, webhook_url: str) -> None:
     """
-    Levanta un servidor aiohttp mínimo solo para responder GET /health.
-    Corre en un puerto auxiliar para no interferir con el webhook de PTB.
+    Arranca el bot en modo producción usando aiohttp como servidor web.
+
+    Rutas expuestas:
+      POST /{TOKEN}  → Recibe los updates que Telegram envía al webhook.
+      GET  /health   → Endpoint de salud para Render y UptimeRobot.
+      GET  /         → Alias de /health para evitar 404 en la raíz.
+
+    Gestión del ciclo de vida:
+      - Escucha SIGTERM y SIGINT para apagarse ordenadamente (Render lo usa).
+      - Elimina el webhook de Telegram al cerrar.
     """
+    import asyncio, signal
+    application = _build_app()
+
+    async def telegram_webhook(request: web.Request) -> web.Response:
+        try:
+            data   = await request.json()
+            update = Update.de_json(data, application.bot)
+            await application.update_queue.put(update)
+        except Exception as e:
+            logging.error(f"Error procesando update: {e}")
+        return web.Response(text="OK")
+
     async def health_check(request: web.Request) -> web.Response:
         return web.Response(text="OK")
 
     aio_app = web.Application()
-    aio_app.router.add_get("/health", health_check)
-    aio_app.router.add_get("/",       health_check)   # Evita el 404 en la raíz
+    aio_app.router.add_post(f"/{TOKEN}", telegram_webhook)
+    aio_app.router.add_get("/health",    health_check)
+    aio_app.router.add_get("/",          health_check)
+
     runner = web.AppRunner(aio_app)
-    await runner.setup()
-    await web.TCPSite(runner, "0.0.0.0", port_health).start()
-    return runner
 
+    stop_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, stop_event.set)
 
-def _run_prod(port: int, webhook_url: str) -> None:
-    """
-    Arranca el bot en modo producción usando el webhook runner nativo de PTB.
+    async with application:
+        await application.start()
+        await runner.setup()
+        await web.TCPSite(runner, "0.0.0.0", port).start()
 
-    PTB maneja internamente:
-      - Registro del webhook en Telegram.
-      - Recepción y procesamiento de updates de forma asíncrona y robusta.
-      - Apagado ordenado al recibir SIGTERM/SIGINT.
+        full_webhook = f"{webhook_url}/{TOKEN}"
+        await application.bot.set_webhook(url=full_webhook, drop_pending_updates=True)
+        logging.info(f"Webhook configurado: {full_webhook}")
+        print(f"🚀 Bot activo — puerto {port} — health: {webhook_url}/health")
 
-    El endpoint /health corre en un servidor aiohttp auxiliar en el mismo puerto
-    mediante una ruta adicional registrada antes de que PTB tome control.
-    """
-    application = _build_app()
+        await stop_event.wait()
 
-    full_webhook = f"{webhook_url}/{TOKEN}"
-    logging.info(f"Iniciando webhook en: {full_webhook}")
-    print(f"🚀 Bot activo — puerto {port} — webhook: {full_webhook}")
-
-    application.run_webhook(
-        listen="0.0.0.0",
-        port=port,
-        url_path=TOKEN,
-        webhook_url=full_webhook,
-        drop_pending_updates=True,   # Descarta updates acumulados mientras estuvo caído
-    )
+        logging.info("Apagando bot...")
+        await application.bot.delete_webhook()
+        await runner.cleanup()
+        await application.stop()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -645,7 +661,8 @@ if __name__ == '__main__':
             )
 
         print("🚀 Iniciando en modo WEBHOOK (Producción)...")
-        _run_prod(PORT, webhook_url.rstrip("/"))
+        import asyncio
+        asyncio.run(_run_prod(PORT, webhook_url.rstrip("/")))
 
     else:
         raise SystemExit(f"❌ Error: MODO='{MODO}' no reconocido. Usa 'dev' o 'prod'.")
