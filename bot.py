@@ -569,73 +569,43 @@ def _build_app() -> Application:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# MODO PRODUCCIÓN — webhook nativo de PTB + aiohttp solo para /health
-# ═══════════════════════════════════════════════════════════════════════════════
-# MODO PRODUCCIÓN — servidor aiohttp con /health + webhook de Telegram
+# MODO PRODUCCIÓN — polling + health server en thread separado
 # ═══════════════════════════════════════════════════════════════════════════════
 
-async def _run_prod(port: int, webhook_url: str) -> None:
+def _run_prod(port: int) -> None:
     """
-    Arranca el bot en modo producción usando aiohttp como servidor web.
+    Arranca el bot en modo producción usando polling.
 
-    Rutas expuestas:
-      POST /{TOKEN}  → Recibe los updates que Telegram envía al webhook.
-      GET  /health   → Endpoint de salud para Render y UptimeRobot.
-      GET  /         → Alias de /health para evitar 404 en la raíz.
+    El webhook tiene problemas en Render free tier (el proxy bloquea o filtra
+    los POST entrantes de Telegram). Polling es más confiable: el bot consulta
+    activamente a Telegram en lugar de esperar que Telegram le llame.
 
-    Gestión del ciclo de vida:
-      - Escucha SIGTERM y SIGINT para apagarse ordenadamente (Render lo usa).
-      - Elimina el webhook de Telegram al cerrar.
+    Un servidor HTTP mínimo corre en un thread separado para responder /health
+    y mantener el servicio activo en Render y UptimeRobot.
     """
-    import asyncio, signal
-    application = _build_app()
+    import http.server
+    import threading
 
-    async def telegram_webhook(request: web.Request) -> web.Response:
-        logging.info("Webhook POST recibido de Telegram")
-        try:
-            data   = await request.json()
-            update = Update.de_json(data, application.bot)
-            await application.update_queue.put(update)
-            logging.info(f"Update encolado: update_id={data.get('update_id')}")
-        except Exception as e:
-            logging.error(f"Error procesando update: {e}", exc_info=True)
-        return web.Response(text="OK")
+    class HealthHandler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"OK")
+        def do_HEAD(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+        def log_message(self, format, *args):
+            pass  # Suprimir logs del servidor de salud para no contaminar el output
 
-    async def health_check(request: web.Request) -> web.Response:
-        return web.Response(text="OK")
+    health_server = http.server.HTTPServer(("0.0.0.0", port), HealthHandler)
+    thread = threading.Thread(target=health_server.serve_forever, daemon=True)
+    thread.start()
+    logging.info(f"Health server activo en puerto {port}")
 
-    # Usar /webhook como path — evita el problema del proxy de Render con
-    # rutas que contienen ":" (el token tiene formato "id:hash")
-    WEBHOOK_PATH = "/webhook"
-
-    aio_app = web.Application()
-    aio_app.router.add_post(WEBHOOK_PATH, telegram_webhook)
-    aio_app.router.add_get("/health",     health_check)
-    aio_app.router.add_get("/",           health_check)
-
-    runner = web.AppRunner(aio_app)
-
-    stop_event = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, stop_event.set)
-
-    async with application:
-        await application.start()
-        await runner.setup()
-        await web.TCPSite(runner, "0.0.0.0", port).start()
-
-        full_webhook = f"{webhook_url}{WEBHOOK_PATH}"
-        await application.bot.set_webhook(url=full_webhook, drop_pending_updates=True)
-        logging.info(f"Webhook configurado: {full_webhook}")
-        print(f"🚀 Bot activo — puerto {port} — health: {webhook_url}/health")
-
-        await stop_event.wait()
-
-        logging.info("Apagando bot...")
-        await application.bot.delete_webhook()
-        await runner.cleanup()
-        await application.stop()
+    print(f"🚀 Bot activo — puerto {port} — polling activado")
+    _build_app().run_polling(drop_pending_updates=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -657,19 +627,8 @@ if __name__ == '__main__':
 
     elif MODO == "prod":
         PORT = int(os.getenv("PORT", "8443"))
-
-        # Render inyecta RENDER_EXTERNAL_URL automáticamente con la URL pública del servicio.
-        # WEBHOOK_URL sirve como alternativa para otros hostings.
-        webhook_url = os.getenv("WEBHOOK_URL") or os.getenv("RENDER_EXTERNAL_URL")
-        if not webhook_url:
-            raise SystemExit(
-                "❌ Error: configura WEBHOOK_URL o despliega en Render "
-                "(provee RENDER_EXTERNAL_URL automáticamente)."
-            )
-
-        print("🚀 Iniciando en modo WEBHOOK (Producción)...")
-        import asyncio
-        asyncio.run(_run_prod(PORT, webhook_url.rstrip("/")))
+        print("🚀 Iniciando en modo PRODUCCIÓN (Polling)...")
+        _run_prod(PORT)
 
     else:
         raise SystemExit(f"❌ Error: MODO='{MODO}' no reconocido. Usa 'dev' o 'prod'.")
