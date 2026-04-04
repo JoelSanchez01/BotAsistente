@@ -12,6 +12,7 @@ Modos de ejecución (variable de entorno MODO):
   - "prod" → Webhook sobre aiohttp con /health (Render / cualquier hosting).
 """
 
+import asyncio
 import functools
 import logging
 import os
@@ -170,7 +171,7 @@ async def nueva_tarea(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.info(f"Fecha detectada '{fecha_texto}': {fecha_limite_obj}")
 
     # ── Paso 4: guardar en BD y programar recordatorio ────────────────────────
-    db.agregar_tarea(user_id, texto_final, categoria, fecha_limite_obj)
+    await asyncio.to_thread(db.agregar_tarea, user_id, texto_final, categoria, fecha_limite_obj)
     mensaje = f"✅ Tarea guardada en <b>{categoria}</b>: {texto_final}"
 
     if fecha_limite_obj:
@@ -205,7 +206,7 @@ async def pendientes(update: Update, context: ContextTypes.DEFAULT_TYPE):
     Agrupa el resultado por categoría para mayor legibilidad.
     """
     user_id = update.effective_user.id
-    tareas = db.obtener_tareas(user_id)
+    tareas = await asyncio.to_thread(db.obtener_tareas, user_id)
     if not tareas:
         await update.message.reply_text("🎉 ¡No tienes tareas pendientes!")
         return
@@ -269,10 +270,9 @@ async def completar(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_id = update.effective_user.id
     try:
-        db.completar_tarea(tarea_id, user_id)
+        await asyncio.to_thread(db.completar_tarea, tarea_id, user_id)
         await update.message.reply_text(f"✅ Tarea {tarea_id} completada.")
     except ValueError as e:
-        # La BD lanza ValueError si la tarea no existe o no pertenece al usuario
         await update.message.reply_text(str(e))
 
 
@@ -308,7 +308,7 @@ async def reporte(update: Update, context: ContextTypes.DEFAULT_TYPE):
         categoria_filtro = text_args[0].lstrip('#').capitalize()
 
     user_id = update.effective_user.id
-    tareas = db.obtener_reporte_mensual(user_id, mes, anio)
+    tareas = await asyncio.to_thread(db.obtener_reporte_mensual, user_id, mes, anio)
 
     if categoria_filtro:
         tareas = [t for t in tareas if t[2].lower() == categoria_filtro.lower()]
@@ -400,7 +400,7 @@ async def nuevo_habito(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_id = update.effective_user.id
     try:
-        db.crear_habito(user_id, nombre, tipo)
+        await asyncio.to_thread(db.crear_habito, user_id, nombre, tipo)
         await update.message.reply_text(
             f"🌱 Hábito creado: <b>{nombre}</b> ({tipo})", parse_mode="HTML"
         )
@@ -427,11 +427,12 @@ async def check_habito(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id  = update.effective_user.id
     es_id    = identificador.isdigit()
 
-    exito, msg = db.registrar_progreso_habito(
+    exito, msg = await asyncio.to_thread(
+        db.registrar_progreso_habito,
         user_id,
         int(identificador) if es_id else identificador,
         cantidad,
-        es_id=es_id
+        es_id
     )
     await update.message.reply_text(msg + (" 🔥" if exito else ""))
 
@@ -440,7 +441,7 @@ async def check_habito(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def ver_rachas(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Muestra el estado actual de todos los hábitos con su racha de días consecutivos."""
     user_id = update.effective_user.id
-    stats = db.obtener_historial_habitos(user_id)
+    stats = await asyncio.to_thread(db.obtener_historial_habitos, user_id)
 
     if not stats:
         await update.message.reply_text("No tienes hábitos. Crea uno con /habito")
@@ -475,7 +476,7 @@ async def daily_reminder(context: ContextTypes.DEFAULT_TYPE):
         return
     user_id = int(ALLOWED_USER_ID)
 
-    tareas = db.obtener_tareas(user_id)
+    tareas = await asyncio.to_thread(db.obtener_tareas, user_id)
     tareas_trabajo = [t for t in tareas if t[2].lower() == "trabajo"]
     if not tareas_trabajo:
         return  # Sin tareas de trabajo, no enviar mensaje vacío
@@ -496,7 +497,7 @@ async def nightly_habit_reminder(context: ContextTypes.DEFAULT_TYPE):
         return
     user_id = int(ALLOWED_USER_ID)
 
-    habitos_pendientes = db.obtener_habitos_pendientes_hoy(user_id)
+    habitos_pendientes = await asyncio.to_thread(db.obtener_habitos_pendientes_hoy, user_id)
     if not habitos_pendientes:
         return  # Todos los hábitos completos, sin recordatorio
 
