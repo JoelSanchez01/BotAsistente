@@ -12,12 +12,10 @@ Modos de ejecución (variable de entorno MODO):
   - "prod" → Webhook sobre aiohttp con /health (Render / cualquier hosting).
 """
 
-import asyncio
 import functools
 import logging
 import os
 import re
-import signal
 
 from aiohttp import web
 from telegram import Update
@@ -546,6 +544,12 @@ def _build_app() -> Application:
     # ── Utilidades ────────────────────────────────────────────────────────────
     app.add_handler(CommandHandler('test_alarma', test_alarm))
 
+    # ── Error handler global — registra cualquier excepción silenciosa de PTB ──
+    async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        logging.error("Excepción en handler:", exc_info=context.error)
+
+    app.add_error_handler(error_handler)
+
     # ── Jobs diarios (solo si hay un usuario configurado) ────────────────────
     if ALLOWED_USER_ID:
         app.job_queue.run_daily(
@@ -564,75 +568,51 @@ def _build_app() -> Application:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# MODO PRODUCCIÓN — servidor aiohttp propio
+# MODO PRODUCCIÓN — webhook nativo de PTB + aiohttp solo para /health
 # ═══════════════════════════════════════════════════════════════════════════════
 
-async def _run_prod(port: int, webhook_url: str) -> None:
+async def _health_server(port_health: int) -> web.AppRunner:
     """
-    Arranca el bot en modo producción usando aiohttp como servidor web propio.
+    Levanta un servidor aiohttp mínimo solo para responder GET /health.
+    Corre en un puerto auxiliar para no interferir con el webhook de PTB.
+    """
+    async def health_check(request: web.Request) -> web.Response:
+        return web.Response(text="OK")
 
-    Rutas expuestas:
-      POST /{TOKEN}  → Recibe los updates que Telegram envía al webhook.
-      GET  /health   → Endpoint de salud para que Render/UptimeRobot
-                       puedan verificar que el servicio está activo.
+    aio_app = web.Application()
+    aio_app.router.add_get("/health", health_check)
+    aio_app.router.add_get("/",       health_check)   # Evita el 404 en la raíz
+    runner = web.AppRunner(aio_app)
+    await runner.setup()
+    await web.TCPSite(runner, "0.0.0.0", port_health).start()
+    return runner
 
-    Gestión del ciclo de vida:
-      - Escucha SIGTERM y SIGINT para apagarse de forma ordenada (Render lo usa).
-      - Elimina el webhook de Telegram al cerrar para evitar errores colgantes.
+
+def _run_prod(port: int, webhook_url: str) -> None:
+    """
+    Arranca el bot en modo producción usando el webhook runner nativo de PTB.
+
+    PTB maneja internamente:
+      - Registro del webhook en Telegram.
+      - Recepción y procesamiento de updates de forma asíncrona y robusta.
+      - Apagado ordenado al recibir SIGTERM/SIGINT.
+
+    El endpoint /health corre en un servidor aiohttp auxiliar en el mismo puerto
+    mediante una ruta adicional registrada antes de que PTB tome control.
     """
     application = _build_app()
 
-    # ── Handlers HTTP ─────────────────────────────────────────────────────────
+    full_webhook = f"{webhook_url}/{TOKEN}"
+    logging.info(f"Iniciando webhook en: {full_webhook}")
+    print(f"🚀 Bot activo — puerto {port} — webhook: {full_webhook}")
 
-    async def telegram_webhook(request: web.Request) -> web.Response:
-        """Recibe el JSON de Telegram, lo deserializa y lo encola en PTB."""
-        try:
-            data   = await request.json()
-            update = Update.de_json(data, application.bot)
-            await application.update_queue.put(update)
-        except Exception as e:
-            logging.error(f"Error procesando update entrante: {e}")
-        return web.Response(text="OK")
-
-    async def health_check(request: web.Request) -> web.Response:
-        """Responde 200 OK para keep-alive de Render / UptimeRobot."""
-        return web.Response(text="OK")
-
-    # ── Servidor aiohttp ──────────────────────────────────────────────────────
-    aio_app = web.Application()
-    aio_app.router.add_post(f"/{TOKEN}", telegram_webhook)
-    aio_app.router.add_get("/health",    health_check)
-
-    runner = web.AppRunner(aio_app)
-
-    # ── Manejo de señales del SO ──────────────────────────────────────────────
-    stop_event = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        # Cuando Render apaga el servicio envía SIGTERM; SIGINT es Ctrl+C local
-        loop.add_signal_handler(sig, stop_event.set)
-
-    # ── Ciclo de vida ─────────────────────────────────────────────────────────
-    async with application:
-        await application.start()
-
-        await runner.setup()
-        site = web.TCPSite(runner, "0.0.0.0", port)
-        await site.start()
-
-        # Registrar el webhook en los servidores de Telegram
-        full_webhook = f"{webhook_url}/{TOKEN}"
-        await application.bot.set_webhook(url=full_webhook)
-        logging.info(f"Webhook configurado: {full_webhook}")
-        print(f"🚀 Bot activo — puerto {port} — health: {webhook_url}/health")
-
-        await stop_event.wait()   # Mantiene el proceso vivo hasta señal de cierre
-
-        # ── Limpieza ordenada ─────────────────────────────────────────────────
-        logging.info("Señal de cierre recibida. Apagando bot...")
-        await application.bot.delete_webhook()
-        await runner.cleanup()
-        await application.stop()
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=port,
+        url_path=TOKEN,
+        webhook_url=full_webhook,
+        drop_pending_updates=True,   # Descarta updates acumulados mientras estuvo caído
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -665,7 +645,7 @@ if __name__ == '__main__':
             )
 
         print("🚀 Iniciando en modo WEBHOOK (Producción)...")
-        asyncio.run(_run_prod(PORT, webhook_url.rstrip("/")))
+        _run_prod(PORT, webhook_url.rstrip("/"))
 
     else:
         raise SystemExit(f"❌ Error: MODO='{MODO}' no reconocido. Usa 'dev' o 'prod'.")
