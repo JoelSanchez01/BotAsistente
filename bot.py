@@ -52,6 +52,18 @@ LOCAL_TZ = pytz.timezone('America/Mexico_City')
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# UTILIDADES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+async def _uso_incorrecto(update: Update, motivo: str, uso: str, ejemplo: str = "") -> None:
+    """Responde con un mensaje de error estándar cuando un comando se usa mal."""
+    msg = f"❌ <b>Comando mal usado</b>: {motivo}\n\n📌 <b>Uso correcto:</b>\n<code>{uso}</code>"
+    if ejemplo:
+        msg += f"\n\n💡 <b>Ejemplo:</b>\n<code>{ejemplo}</code>"
+    await update.message.reply_html(msg)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # SEGURIDAD
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -121,7 +133,12 @@ async def nueva_tarea(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     raw_text = " ".join(context.args)
     if not raw_text:
-        await update.message.reply_text("Uso: /nueva Comprar leche #casa mañana a las 5pm")
+        await _uso_incorrecto(
+            update,
+            motivo="No indicaste qué tarea crear.",
+            uso="/nueva [descripción] #categoría [fecha opcional]",
+            ejemplo="/nueva Pagar luz #casa mañana a las 5pm"
+        )
         return
 
     user_id = update.effective_user.id
@@ -260,12 +277,22 @@ async def completar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     La BD valida que la tarea pertenezca al usuario antes de actualizarla.
     """
     if not context.args:
-        await update.message.reply_text("Uso: /completar [numero_tarea]")
+        await _uso_incorrecto(
+            update,
+            motivo="Falta el ID de la tarea a completar.",
+            uso="/completar [número_tarea]",
+            ejemplo="/completar 3"
+        )
         return
     try:
         tarea_id = int(context.args[0])
     except ValueError:
-        await update.message.reply_text("Uso: /completar [numero_tarea]")
+        await _uso_incorrecto(
+            update,
+            motivo=f"«{context.args[0]}» no es un número válido. El ID debe ser el número que aparece en /pendientes.",
+            uso="/completar [número_tarea]",
+            ejemplo="/completar 3"
+        )
         return
 
     user_id = update.effective_user.id
@@ -381,9 +408,11 @@ async def nuevo_habito(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     args = context.args
     if not args:
-        await update.message.reply_text(
-            "Uso: /habito [Nombre del hábito] [tipo: simple/contador]\n"
-            "Ej: /habito Leer 30 min simple"
+        await _uso_incorrecto(
+            update,
+            motivo="Falta el nombre del hábito. Sin nombre no puedo crearlo.",
+            uso="/habito [nombre] [tipo: simple/contador]",
+            ejemplo="/habito Leer 30 min simple\n/habito Agua contador"
         )
         return
 
@@ -418,7 +447,12 @@ async def check_habito(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     args = context.args
     if not args:
-        await update.message.reply_text("Uso: /check [ID o Nombre] [cantidad_opcional]")
+        await _uso_incorrecto(
+            update,
+            motivo="Falta el ID o nombre del hábito a registrar.",
+            uso="/check [ID o nombre] [cantidad opcional para contadores]",
+            ejemplo="/check Leer\n/check Agua 500\n/check 2 3"
+        )
         return
 
     identificador = args[0]
